@@ -1,0 +1,229 @@
+<!index.html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <title>ระบบกรองข้อมูลและสรุปยอดออเดอร์</title>
+    <!-- โหลดไลบรารี SheetJS -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: sans-serif; max-width: 900px; margin: 30px auto; padding: 20px; background: #f4f6f9; color: #333; }
+        .card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        input[type="file"], input[type="date"] { margin: 10px 0; padding: 8px; }
+        button { background: #4CAF50; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 16px; }
+        button:hover { background: #45a049; }
+        .btn-danger { background: #f44336; }
+        .btn-danger:hover { background: #da190b; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { border: 1px solid #ddd; padding: 10px; text-align: center; }
+        th { background-color: #f2f2f2; }
+        #status { margin-top: 15px; font-weight: bold; color: #007bff; }
+        .summary-box { display: flex; gap: 20px; margin-top: 15px; }
+        .stat-card { background: #eef2f7; padding: 15px; border-radius: 6px; flex: 1; text-align: center; }
+        .stat-card h3 { margin: 0 0 10px 0; font-size: 16px; color: #555; }
+        .stat-card p { margin: 0; font-size: 22px; font-weight: bold; color: #2c3e50; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>ระบบกรองข้อมูลและสรุปยอดออเดอร์</h2>
+    <p>1. เลือกวันที่ของข้อมูล</p>
+    <input type="date" id="recordDate">
+    
+    <p>2. เลือกไฟล์ Excel (.xlsx, .xls) หรือ CSV</p>
+    <input type="file" id="fileInput" accept=".xlsx, .xls, .csv"><br><br>
+    
+    <button onclick="processFile()">ประมวลผล กรองข้อมูล และบันทึกยอด</button>
+    <div id="status"></div>
+</div>
+
+<div class="card">
+    <h3>📊 ภาพรวมชิ้นงานและค่าส่ง (ของวันที่เลือก)</h3>
+    <div class="summary-box">
+        <div class="stat-card">
+            <h3>จำนวนชิ้นงาน (ออเดอร์)</h3>
+            <p id="dailyCount">0 ชิ้น</p>
+        </div>
+        <div class="stat-card">
+            <h3>ยอดรวมค่าขนส่ง</h3>
+            <p id="dailyCost">0.00 บาท</p>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h3>📅 ตารางรวบรวมข้อมูลทั้งเดือน</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>วันที่</th>
+                <th>จำนวนชิ้นงาน</th>
+                <th>ยอดรวมค่าขนส่ง (บาท)</th>
+            </tr>
+        </thead>
+        <tbody id="monthlyTableBody">
+            <tr><td colspan="3">ยังไม่มีข้อมูลในเดือนนี้</td></tr>
+        </tbody>
+    </table>
+    <br>
+    <button class="btn-danger" onclick="clearMonthlyData()">ล้างข้อมูลทั้งเดือน</button>
+</div>
+
+<script>
+// กำหนดวันที่ปัจจุบันให้ช่องเลือกวันที่อัตโนมัติ
+document.getElementById('recordDate').valueAsDate = new Date();
+
+function processFile() {
+    const fileInput = document.getElementById('fileInput');
+    const recordDate = document.getElementById('recordDate').value;
+    const statusDiv = document.getElementById('status');
+    
+    if (!recordDate) {
+        alert('กรุณาเลือกวันที่ก่อนครับ');
+        return;
+    }
+    
+    if (fileInput.files.length === 0) {
+        alert('กรุณาเลือกไฟล์ก่อนครับ');
+        return;
+    }
+    
+    const file = fileInput.files[0];
+    const reader = new FileReader();
+    
+    reader.onload = function(e) {
+        try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+            const firstSheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[firstSheetName];
+            const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+            
+            if (rows.length <= 1) {
+                statusDiv.innerHTML = "ไม่พบข้อมูลในไฟล์";
+                return;
+            }
+            
+            const outputHeaders = [
+                "รหัส", "เลขออเดอร์", "ขนาดกล่อง", "ราคาค่าขนส่ง", 
+                "ชื่อลูกค้าปลายทาง", "ที่อยู่", "เขต", "จังหวัด", "เบอร์โทรติดต่อ"
+            ];
+            
+            let filteredRows = [outputHeaders];
+            const targetCol = 18; // คอลัมน์ S
+            
+            let dailyTotalCount = 0;
+            let dailyTotalCost = 0;
+            
+            for (let i = 1; i < rows.length; i++) {
+                let row = rows[i];
+                let valS = Number(row[targetCol]);
+                
+                // เงื่อนไข: 86000 <= S <= 86230 และ S != 86010
+                if (valS >= 86000 && valS <= 86230 && valS !== 86010) {
+                    let shippingCost = Number(row[3]) || 0; // สมมติราคาค่าขนส่งอยู่คอลัมน์ index 3 (D)
+                    
+                    let filteredRow = [
+                        row[0], row[1], row[2], row[3],
+                        row[4], row[5], row[6], row[7], row[8]
+                    ];
+                    filteredRows.push(filteredRow);
+                    
+                    dailyTotalCount++;
+                    dailyTotalCost += shippingCost;
+                }
+            }
+            
+            if (filteredRows.length <= 1) {
+                statusDiv.innerHTML = "ไม่พบข้อมูลที่ตรงกับเงื่อนไขในคอลัมน์ S";
+                return;
+            }
+            
+            // แสดงผลสรุปรายวันหน้าเว็บ
+            document.getElementById('dailyCount').innerText = dailyTotalCount.toLocaleString() + " ชิ้น";
+            document.getElementById('dailyCost').innerText = dailyTotalCost.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) + " บาท";
+            
+            // บันทึกลงตารางรายเดือน (ผ่าน LocalStorage เพื่อให้ข้อมูลจำไว้บน Browser)
+            saveToMonthlyData(recordDate, dailyTotalCount, dailyTotalCost);
+            
+            // สร้างและดาวน์โหลดไฟล์ Excel ผลลัพธ์การกรอง
+            const newWs = XLSX.utils.aoa_to_sheet(filteredRows);
+            const newWb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(newWb, newWs, "FilteredResult");
+            XLSX.writeFile(newWb, `Filtered_${recordDate}.xlsx`);
+            
+            statusDiv.innerHTML = `ประมวลผลสำเร็จ! กรองได้ ${dailyTotalCount} รายการ และดาวน์โหลดไฟล์เรียบร้อย`;
+            
+        } catch (error) {
+            console.error(error);
+            statusDiv.innerHTML = "เกิดข้อผิดพลาดในการอ่านไฟล์ กรุณาตรวจสอบรูปแบบไฟล์";
+        }
+    };
+    
+    reader.readAsArrayBuffer(file);
+}
+
+// ฟังก์ชันจัดการข้อมูลรายเดือนด้วย LocalStorage
+function saveToMonthlyData(date, count, cost) {
+    let monthlyData = JSON.parse(localStorage.getItem('monthlyOrderData')) || {};
+    
+    // ถ้ามีวันที่นี้อยู่แล้ว จะทับด้วยข้อมูลล่าสุด หรือจะบวกรวมก็ได้ (ที่นี้เลือกทับข้อมูลของวันนั้นๆ เพื่อความถูกต้องหากอัปโหลดไฟล์ซ้ำ)
+    monthlyData[date] = { count: count, cost: cost };
+    
+    localStorage.setItem('monthlyOrderData', JSON.stringify(monthlyData));
+    loadMonthlyTable();
+}
+
+function loadMonthlyTable() {
+    let monthlyData = JSON.parse(localStorage.getItem('monthlyOrderData')) || {};
+    let tbody = document.getElementById('monthlyTableBody');
+    tbody.innerHTML = "";
+    
+    let dates = Object.keys(monthlyData).sort();
+    
+    if (dates.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="3">ยังไม่มีข้อมูลในเดือนนี้</td></tr>`;
+        return;
+    }
+    
+    let totalMonthCount = 0;
+    let totalMonthCost = 0;
+    
+    dates.forEach(date => {
+        let data = monthlyData[date];
+        totalMonthCount += data.count;
+        totalMonthCost += data.cost;
+        
+        let row = `<tr>
+            <td>${date}</td>
+            <td>${data.count.toLocaleString()}</td>
+            <td>${data.cost.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+        </tr>`;
+        tbody.innerHTML += row;
+    });
+    
+    // เพิ่มแถวสรุปยอดรวมทั้งเดือนท้ายตาราง
+    let summaryRow = `<tr style="font-weight: bold; background-color: #e9ecef;">
+        <td>รวมทั้งสิ้น</td>
+        <td>${totalMonthCount.toLocaleString()} ชิ้น</td>
+        <td>${totalMonthCost.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} บาท</td>
+    </tr>`;
+    tbody.innerHTML += summaryRow;
+}
+
+function clearMonthlyData() {
+    if (confirm('คุณต้องการล้างข้อมูลสรุปทั้งเดือนใช่หรือไม่?')) {
+        localStorage.removeItem('monthlyOrderData');
+        loadMonthlyTable();
+        alert('ล้างข้อมูลเรียบร้อยแล้ว');
+    }
+}
+
+// โหลดข้อมูลตารางเดือนทันทีที่เปิดหน้าเว็บ
+window.onload = function() {
+    loadMonthlyTable();
+};
+</script>
+
+</body>
+</html>
